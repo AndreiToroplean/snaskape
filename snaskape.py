@@ -5,6 +5,9 @@ import sys
 import os
 import math
 
+from food import Food
+from snake import Snake
+
 pg.init()
 
 TARGET_RESOLUTION = np.array([1280, 720])
@@ -36,14 +39,14 @@ V_MENU_PADDING = 15
 H_MENU_PADDING = 20
 
 DEBUG_MODE = True
-DISPLAY_NN_DATA = True
+DISPLAY_NN_DATA = False
 
 LAYERS_PER_STATE = 5
 AI_TRAINING_MODE = False
 TRAINING_DATA_PATH = os.path.dirname(__file__) + "/training_data/" \
-					 + str(GRID_SIZE[0]) + "_" + str(GRID_SIZE[1]) + "/"
+                     + str(GRID_SIZE[0]) + "_" + str(GRID_SIZE[1]) + "/"
 if not os.path.exists(TRAINING_DATA_PATH):
-	os.makedirs(TRAINING_DATA_PATH)
+    os.makedirs(TRAINING_DATA_PATH)
 HUMAN_MODEL_MODE = False
 
 # Rewards:
@@ -100,784 +103,611 @@ TARGET_FPS = 15
 NB_LAST_FRAMES = 2
 
 
-class Snake:
-	def __init__(self, positions, vel, head_color=RED, body_color=DARK_GREY, length=INITIAL_SNAKE_LENGTH):
-		self.is_dead = False
-		self.pressed_arrow_key = False
-		self.pseudo_prediction = DO_NOTHING
-
-		self.head_color = head_color
-		self.body_color = body_color
-
-		self.length = length
-
-		if np.array_equal(vel, RANDOM_VEL):
-			self.vel = random.choice([LEFT, RIGHT, UP, DOWN])
-		else:
-			self.vel = vel
-
-		if np.array_equal(positions, RANDOM_POSITION):
-			wrong_position = True
-			while wrong_position:
-				self.positions = [pick_random_position()]
-				if self.not_going_into_wall(self.vel * self.length) and \
-						self.not_going_into_wall(- self.vel * self.length):
-					wrong_position = False
-		else:
-			self.positions = list(positions)
-
-		self.bites = []
-		self.new_potential_position = np.zeros(VECTOR_SIZE, int)
-		self.new_potential_vel = np.zeros(VECTOR_SIZE)
-
-		self.body_surface = pg.Surface(GRID_SIZE, depth=8)
-
-		# Layers: own body, other bodies, heads, food, borders
-		self.pers_surfaces = []
-		self.states = []
-		for i in range(LAYERS_PER_STATE):
-			self.pers_surfaces.append(pg.Surface(GRID_SIZE, depth=8))
-			self.states.append([])
-
-		self.actions = []
-		self.rewards = []
-		self.time = 0
-
-	def move(self, snakes):
-		# not long enough:
-		while len(self.positions) < self.length:
-			self.positions.insert(0, self.positions[0] + self.get_tail_direction())
-		# moving:
-		if self.not_going_into_wall(self.vel) and self.not_going_into_snake_head(snakes):
-			self.positions.append(self.new_potential_position)
-		else:
-			self.rewards[self.time] += RW_DID_NOT_MOVE
-		# too long:
-		while len(self.positions) > self.length:
-			self.positions.pop(0)
-		# dead:
-		if len(self.positions) <= DEAD_AT_LENGTH:
-			self.is_dead = True
-
-	def check_has_eaten(self, food):
-		for j in range(len(food)):
-			if np.array_equal(self.positions[-1], food[j].position):
-				self.rewards[self.time] += RW_HAS_EATEN
-				self.length += 1
-				food.pop(j)
-				break
-
-	def check_got_bitten(self, snakes):
-		self.bites = [[], []]
-		for snake in snakes:
-			snake_head = snake.positions[-1].tolist()
-			for potential_bite in range(len(self.positions)):
-				if self.positions[potential_bite].tolist() == snake_head:  # If a snake bit me:
-					if potential_bite < len(self.positions) - 1 \
-							or potential_bite == len(self.positions) and snake != self:
-						self.bites[0].append(potential_bite)
-						self.bites[1].append(snake)
-						if snake != self:
-							self.rewards[self.time] += RW_GOT_BITTEN
-							snake.rewards[snake.time] += RW_HAS_BITTEN
-							snake.length += 1
-						else:
-							self.rewards[self.time] += RW_HAS_BITTEN_HIMSELF
-
-		if len(self.bites[0]) > 0:
-			new_snakes_positions = [[], []]
-
-			# Separating self into two potential snakes:
-			for j in range(len(self.positions)):
-				if j < min(self.bites[0]):
-					new_snakes_positions[0].append(self.positions[j])
-				if j > max(self.bites[0]):
-					new_snakes_positions[1].append(self.positions[j])
-
-			# Reversing potential tail-snake:
-			new_snakes_positions[0].reverse()
-			new_snake_vel = [self.get_tail_direction(), self.vel]
-
-			# Choosing the longest part for self:
-			if len(new_snakes_positions[0]) > len(new_snakes_positions[1]):
-				this_snake = 0
-			else:
-				this_snake = 1
-
-			# Cutting self:
-			self.length = len(new_snakes_positions[this_snake])
-			self.positions = new_snakes_positions[this_snake]
-			self.vel = new_snake_vel[this_snake]
-
-			# Rewarding for kill:
-			if self.length <= DEAD_AT_LENGTH:
-				for snake in self.bites[1]:
-					snake.rewards[snake.time] += RW_HAS_KILLED
-				self.rewards[self.time] += RW_GOT_KILLED
-
-			# Birthing new snake:
-			new_len = len(new_snakes_positions[not this_snake])
-			if new_len > BIRTH_FROM_LENGTH:
-				snakes.append(Snake(new_snakes_positions[not this_snake],
-									new_snake_vel[not this_snake],
-									length=new_len))
-				snakes[-1].rewards.append(RW_TIME_PASSED)
-
-	def get_tail_direction(self):
-		if len(self.positions) <= 1:
-			return - self.vel
-		else:
-			return self.positions[0] - self.positions[1]
-
-	def not_going_into_wall(self, direction):
-		self.new_potential_position = self.positions[-1] + direction
-		return np.all(np.logical_and(np.less_equal(np.zeros(VECTOR_SIZE), self.new_potential_position),
-									 np.less(self.new_potential_position, GRID_SIZE)))
-
-	def not_going_into_snake_head(self, snakes):
-		good = True
-		for snake in snakes:
-			if snake.positions[-1].tolist() == self.new_potential_position.tolist():
-				good = False
-		return good
-
-	def draw(self, screen, heads_surface):
-		for cell_position in self.positions[:-1]:
-			if not AI_TRAINING_MODE:
-				fill_cell(screen, cell_position, self.body_color)
-			self.body_surface.set_at(cell_position, WHITE)
-		if not AI_TRAINING_MODE:
-			fill_cell(screen, self.positions[-1], self.head_color)
-		heads_surface.set_at(self.positions[-1], WHITE)
-
-
-class Food:
-	def __init__(self, snakes, food, color, position=RANDOM_POSITION):
-		self.color = color
-		self.position = np.zeros(VECTOR_SIZE, int)
-		if np.array_equal(position, RANDOM_POSITION):
-			self.randomize_position(snakes, food)
-		else:
-			self.position = position
-
-	def randomize_position(self, snakes, food):
-		good_pick = False
-		while not good_pick:
-			self.position = pick_random_position()
-			good_pick = True
-			for snake in snakes:
-				for cell_position in snake.positions:
-					if np.array_equal(cell_position, self.position):
-						good_pick = False
-			for item in food:
-				if np.array_equal(item.position, self.position):
-					good_pick = False
-
-	def draw(self, screen, food_surface):
-		if not AI_TRAINING_MODE:
-			fill_cell(screen, self.position, self.color)
-		food_surface.set_at(self.position, WHITE)
-
-
 def fill_cell(screen, cell_position, color):
-	screen.fill(color, pg.Rect(*((cell_position * UNIT_SIZE).tolist()), UNIT_SIZE, UNIT_SIZE))
+    screen.fill(color, pg.Rect(*((cell_position * UNIT_SIZE).tolist()), UNIT_SIZE, UNIT_SIZE))
 
 
 def get_char_width(font):
-	return font.render("a", True, BLACK).get_rect().width
+    return font.render("a", True, BLACK).get_rect().width
 
 
 def get_popup_size(message, char_width):
-	max_line_length = 0
-	for line in message:
-		if len(line) > max_line_length:
-			max_line_length = len(line)
-	return max_line_length * char_width + 2 * H_MENU_PADDING, \
-		   len(message) * V_LINE_OFFSET - V_LINE_PADDING + 2 * V_MENU_PADDING
+    max_line_length = 0
+    for line in message:
+        if len(line) > max_line_length:
+            max_line_length = len(line)
+    return (
+        max_line_length * char_width + 2 * H_MENU_PADDING,
+        len(message) * V_LINE_OFFSET - V_LINE_PADDING + 2 * V_MENU_PADDING
+        )
 
 
 def display_message(screen, message, popup_top):
-	i = 0
-	for line in message:
-		text = MAIN_FONT.render(line, True, BLACK)
-		screen.blit(text, (H_SCREEN_CENTER - text.get_rect().width / 2,
-						   popup_top + V_MENU_PADDING + i * V_LINE_OFFSET - V_MENU_OFFSET))
-		i += 1
+    i = 0
+    for line in message:
+        text = MAIN_FONT.render(line, True, BLACK)
+        screen.blit(text, (
+            H_SCREEN_CENTER - text.get_rect().width / 2,
+            popup_top + V_MENU_PADDING + i * V_LINE_OFFSET - V_MENU_OFFSET
+            ))
+        i += 1
 
 
 def display_popup(screen, message):
-	message.insert(1, "-" * len(message[0]))
-	char_width = get_char_width(MAIN_FONT)
-	popup_size = get_popup_size(message, char_width)
-	popup_top = V_SCREEN_CENTER - popup_size[1] / 2
-	screen.fill(WHITE,
-				pg.Rect(((H_SCREEN_CENTER - popup_size[0] / 2), popup_top - V_MENU_OFFSET),
-						popup_size))
-	display_message(screen, message, popup_top)
+    message.insert(1, "-" * len(message[0]))
+    char_width = get_char_width(MAIN_FONT)
+    popup_size = get_popup_size(message, char_width)
+    popup_top = V_SCREEN_CENTER - popup_size[1] / 2
+    screen.fill(WHITE,
+        pg.Rect(((H_SCREEN_CENTER - popup_size[0] / 2), popup_top - V_MENU_OFFSET),
+            popup_size))
+    display_message(screen, message, popup_top)
 
 
 def pick_random_position():
-	return (np.random.rand(*VECTOR_SIZE) * GRID_SIZE).astype(int).flatten()
+    return (np.random.rand(*VECTOR_SIZE) * GRID_SIZE).astype(int).flatten()
 
 
 def screen_to_pers(surface, position, direction):
-	pers_surface = pg.Surface(PERSPECTIVE_GRID_SIZE, depth=8)
-	pers_surface.fill(BLACK)
-	if np.array_equal(direction, UP):
-		angle = 0
-	elif np.array_equal(direction, LEFT):
-		angle = -90
-	elif np.array_equal(direction, DOWN):
-		angle = 180
-	else:
-		angle = 90
-	pers_surface.blit(surface, PERSPECTIVE_GRID_MIDDLE - position)
-	return pg.transform.rotate(pers_surface, angle)
+    pers_surface = pg.Surface(PERSPECTIVE_GRID_SIZE, depth=8)
+    pers_surface.fill(BLACK)
+    if np.array_equal(direction, UP):
+        angle = 0
+    elif np.array_equal(direction, LEFT):
+        angle = -90
+    elif np.array_equal(direction, DOWN):
+        angle = 180
+    else:
+        angle = 90
+    pers_surface.blit(surface, PERSPECTIVE_GRID_MIDDLE - position)
+    return pg.transform.rotate(pers_surface, angle)
 
 
 def back_propagate_rewards(rewards):
-	bp_rewards = []
-	for i in range(len(rewards)):
-		bp_reward = 0
-		for j in range(len(rewards[i:i + TOO_LATE_REWARD])):
-			bp_reward += rewards[i + j] * pow(DISCOUNT_FACTOR, j)
-		bp_rewards.append(bp_reward)
-	return bp_rewards
+    bp_rewards = []
+    for i in range(len(rewards)):
+        bp_reward = 0
+        for j in range(len(rewards[i:i + TOO_LATE_REWARD])):
+            bp_reward += rewards[i + j] * pow(DISCOUNT_FACTOR, j)
+        bp_rewards.append(bp_reward)
+    return bp_rewards
 
 
 def pseudo_predict():
-	return random.choice((DO_NOTHING, REVERSE, TURN_LEFT, TURN_RIGHT))
+    return random.choice((DO_NOTHING, REVERSE, TURN_LEFT, TURN_RIGHT))
 
 
 def start_loop(screen, clock):
-	screen.fill(LIGHT_GREY)
+    screen.fill(LIGHT_GREY)
 
-	message = ["WELCOME TO SNASKAPE!",
-			   "",
-			   "Start playing directly by pressing the number of players on the keypad.",
-			   "Possible choices: 1, 2, and 0 for AI mode.",
-			   "",
-			   "Controls:",
-			   "Player one: arrows",
-			   "Player two: Z, Q, S, D",
-			   "Pause: Escape",
-			   "",
-			   "Press Enter on the keypad to train the AI."]
-	display_popup(screen, message)
+    message = ["WELCOME TO SNASKAPE!",
+        "",
+        "Start playing directly by pressing the number of players on the keypad.",
+        "Possible choices: 1, 2, and 0 for AI mode.",
+        "",
+        "Controls:",
+        "Player one: arrows",
+        "Player two: Z, Q, S, D",
+        "Pause: Escape",
+        "",
+        "Press Enter on the keypad to train the AI."]
+    display_popup(screen, message)
 
-	pg.display.update()
+    pg.display.update()
 
-	while True:
-		for event in pg.event.get():
-			if event.type == pg.QUIT:
-				pg.quit()
-				sys.exit()
-			elif event.type == pg.KEYDOWN:
-				if event.key == pg.K_ESCAPE:
-					pg.quit()
-					sys.exit()
-				elif event.key == pg.K_KP0:
-					return 0
-				elif event.key == pg.K_KP1:
-					return 1
-				elif event.key == pg.K_KP2:
-					return 2
-				elif event.key == pg.K_KP_ENTER:
-					return -1
+    while True:
+        for event in pg.event.get():
+            if event.type == pg.QUIT:
+                pg.quit()
+                sys.exit()
+            elif event.type == pg.KEYDOWN:
+                if event.key == pg.K_ESCAPE:
+                    pg.quit()
+                    sys.exit()
+                elif event.key == pg.K_KP0:
+                    return 0
+                elif event.key == pg.K_KP1:
+                    return 1
+                elif event.key == pg.K_KP2:
+                    return 2
+                elif event.key == pg.K_KP_ENTER:
+                    return -1
 
-		clock.tick(TARGET_FPS)
+        clock.tick(TARGET_FPS)
 
 
 def pause_loop(screen, clock):
-	message = ["PAUSE MENU",
-			   "",
-			   "Continue: Enter",
-			   "Restart: Backspace",
-			   "Main menu: Tab",
-			   "Exit: Escape"]
-	display_popup(screen, message)
+    message = ["PAUSE MENU",
+        "",
+        "Continue: Enter",
+        "Restart: Backspace",
+        "Main menu: Tab",
+        "Exit: Escape"]
+    display_popup(screen, message)
 
-	pg.display.update()
+    pg.display.update()
 
-	while True:
-		for event in pg.event.get():
-			if event.type == pg.QUIT:
-				pg.quit()
-				sys.exit()
-			elif event.type == pg.KEYDOWN:
-				if event.key == pg.K_ESCAPE:
-					pg.quit()
-					sys.exit()
-				elif event.key == pg.K_RETURN:
-					return RQ_CONTINUE
-				elif event.key == pg.K_BACKSPACE:
-					return RQ_RESTART
-				elif event.key == pg.K_TAB:
-					return RQ_MAIN_MENU
+    while True:
+        for event in pg.event.get():
+            if event.type == pg.QUIT:
+                pg.quit()
+                sys.exit()
+            elif event.type == pg.KEYDOWN:
+                if event.key == pg.K_ESCAPE:
+                    pg.quit()
+                    sys.exit()
+                elif event.key == pg.K_RETURN:
+                    return RQ_CONTINUE
+                elif event.key == pg.K_BACKSPACE:
+                    return RQ_RESTART
+                elif event.key == pg.K_TAB:
+                    return RQ_MAIN_MENU
 
-		clock.tick(TARGET_FPS)
+        clock.tick(TARGET_FPS)
 
 
 def end_loop(screen, clock, winner):
-	message = ["GAME OVER, {} WINS!".format(winner),
-			   "",
-			   "Restart: Backspace",
-			   "Main menu: Tab",
-			   "Exit: Escape"]
-	display_popup(screen, message)
+    message = ["GAME OVER, {} WINS!".format(winner),
+        "",
+        "Restart: Backspace",
+        "Main menu: Tab",
+        "Exit: Escape"]
+    display_popup(screen, message)
 
-	pg.display.update()
+    pg.display.update()
 
-	while True:
-		for event in pg.event.get():
-			if event.type == pg.QUIT:
-				pg.quit()
-				sys.exit()
-			elif event.type == pg.KEYDOWN:
-				if event.key == pg.K_ESCAPE:
-					pg.quit()
-					sys.exit()
-				elif event.key == pg.K_BACKSPACE:
-					return RQ_RESTART
-				elif event.key == pg.K_TAB:
-					return RQ_MAIN_MENU
+    while True:
+        for event in pg.event.get():
+            if event.type == pg.QUIT:
+                pg.quit()
+                sys.exit()
+            elif event.type == pg.KEYDOWN:
+                if event.key == pg.K_ESCAPE:
+                    pg.quit()
+                    sys.exit()
+                elif event.key == pg.K_BACKSPACE:
+                    return RQ_RESTART
+                elif event.key == pg.K_TAB:
+                    return RQ_MAIN_MENU
 
-		clock.tick(TARGET_FPS)
+        clock.tick(TARGET_FPS)
 
 
 # ---------------------------------- INITIALIZING GAME ----------------------------------
 
 def game_loop(screen, clock, nb_of_players, living_players):
-	# Controlling number of snakes:
-	if INITIAL_NB_SNAKES < nb_of_players:
-		nb_of_snakes = nb_of_players
-	else:
-		nb_of_snakes = INITIAL_NB_SNAKES
+    # Controlling number of snakes:
+    if INITIAL_NB_SNAKES < nb_of_players:
+        nb_of_snakes = nb_of_players
+    else:
+        nb_of_snakes = INITIAL_NB_SNAKES
 
-	# Initialising snakes:
-	snakes = []
-	for i in range(nb_of_snakes):
-		if i == 0:
-			if nb_of_players == 0:
-				snakes.append(Snake(RIGHT_QUARTER_OF_THE_GRID, LEFT))
-			elif nb_of_players == 1:
-				snakes.append(Snake(MIDDLE_OF_THE_GRID, RANDOM_VEL, BLACK))
-			elif nb_of_players == 2:
-				snakes.append(Snake(RIGHT_QUARTER_OF_THE_GRID, LEFT, BLACK))
-			elif nb_of_players > 2:
-				snakes.append(Snake(RANDOM_POSITION, RANDOM_VEL, BLACK))
-		elif i == 1:
-			if nb_of_players == 0:
-				snakes.append(Snake(LEFT_QUARTER_OF_THE_GRID, RIGHT))
-			elif nb_of_players == 1:
-				snakes.append(Snake(RANDOM_POSITION, RANDOM_VEL))
-			elif nb_of_players == 2:
-				snakes.append(Snake(LEFT_QUARTER_OF_THE_GRID, RIGHT, DARK_BLUE))
-			elif nb_of_players > 2:
-				snakes.append(Snake(RANDOM_POSITION, RANDOM_VEL, DARK_BLUE))
-		else:
-			snakes.append(Snake(RANDOM_POSITION, RANDOM_VEL))
+    # Initialising snakes:
+    snakes = []
+    for i in range(nb_of_snakes):
+        if i == 0:
+            if nb_of_players == 0:
+                snakes.append(Snake(RIGHT_QUARTER_OF_THE_GRID, LEFT))
+            elif nb_of_players == 1:
+                snakes.append(Snake(MIDDLE_OF_THE_GRID, RANDOM_VEL, BLACK))
+            elif nb_of_players == 2:
+                snakes.append(Snake(RIGHT_QUARTER_OF_THE_GRID, LEFT, BLACK))
+            elif nb_of_players > 2:
+                snakes.append(Snake(RANDOM_POSITION, RANDOM_VEL, BLACK))
+        elif i == 1:
+            if nb_of_players == 0:
+                snakes.append(Snake(LEFT_QUARTER_OF_THE_GRID, RIGHT))
+            elif nb_of_players == 1:
+                snakes.append(Snake(RANDOM_POSITION, RANDOM_VEL))
+            elif nb_of_players == 2:
+                snakes.append(Snake(LEFT_QUARTER_OF_THE_GRID, RIGHT, DARK_BLUE))
+            elif nb_of_players > 2:
+                snakes.append(Snake(RANDOM_POSITION, RANDOM_VEL, DARK_BLUE))
+        else:
+            snakes.append(Snake(RANDOM_POSITION, RANDOM_VEL))
 
-	# Assigning snakes to players:
-	players = []
-	for i in range(nb_of_players):
-		players.append(snakes[i])
+    # Assigning snakes to players:
+    players = []
+    for i in range(nb_of_players):
+        players.append(snakes[i])
 
-	# Initialising food:
-	food = []
-	for i in range(random.randrange(1, 4)):
-		food.append(Food(snakes, food, CYAN))
+    # Initialising food:
+    food = []
+    for i in range(random.randrange(1, 4)):
+        food.append(Food(snakes, food, CYAN))
 
-	# Initialising other variables:
-	last_frames = NB_LAST_FRAMES
-	slow_mo = 1
-	game_loop_cycles = 0
-	human_data_processed = False
-	dead_snakes = []
+    # Initialising other variables:
+    last_frames = NB_LAST_FRAMES
+    slow_mo = 1
+    game_loop_cycles = 0
+    human_data_processed = False
+    dead_snakes = []
 
-	heads_surface = pg.Surface(GRID_SIZE, depth=8)
-	food_surface = pg.Surface(GRID_SIZE, depth=8)
-	borders_surface = pg.Surface(GRID_SIZE, depth=8)
-	borders_surface.blit(screen, (0, 0))
-	borders_surface.fill(WHITE)
+    heads_surface = pg.Surface(GRID_SIZE, depth=8)
+    food_surface = pg.Surface(GRID_SIZE, depth=8)
+    borders_surface = pg.Surface(GRID_SIZE, depth=8)
+    borders_surface.blit(screen, (0, 0))
+    borders_surface.fill(WHITE)
 
-	# Displaying AI training popup:
-	if AI_TRAINING_MODE:
-		screen.fill(LIGHT_GREY)
-		message = ["TRAINING THE AI",
-				   ""
-				   "Check console for details.",
-				   "Save and exit: Escape"]
-		display_popup(screen, message)
+    # Displaying AI training popup:
+    if AI_TRAINING_MODE:
+        screen.fill(LIGHT_GREY)
+        message = ["TRAINING THE AI",
+            ""
+            "Check console for details.",
+            "Save and exit: Escape"]
+        display_popup(screen, message)
 
-		pg.display.update()
+        pg.display.update()
 
-	# Loading human data:
-	if nb_of_players > 0:
-		human_data_exists = False
-		# if os.path.isfile(TRAINING_DATA_PATH + "human_states.npy"):
-		# 	human_data_exists = True
-		# 	human_states = np.load(TRAINING_DATA_PATH + "human_states.npy")
-		# 	human_actions = np.load(TRAINING_DATA_PATH + "human_actions.npy")
-		# 	human_rewards = np.load(TRAINING_DATA_PATH + "human_rewards.npy")
-		# 	print("Human data loaded.")
+    # Loading human data:
+    if nb_of_players > 0:
+        human_data_exists = False
+    # if os.path.isfile(TRAINING_DATA_PATH + "human_states.npy"):
+    # 	human_data_exists = True
+    # 	human_states = np.load(TRAINING_DATA_PATH + "human_states.npy")
+    # 	human_actions = np.load(TRAINING_DATA_PATH + "human_actions.npy")
+    # 	human_rewards = np.load(TRAINING_DATA_PATH + "human_rewards.npy")
+    # 	print("Human data loaded.")
 
-	# ---------------------------------- ACTUAL GAME LOOP ----------------------------------
-	while True:
+    # ---------------------------------- ACTUAL GAME LOOP ----------------------------------
+    while True:
 
-		# User input handling:
-		if not AI_TRAINING_MODE:
-			# Controls handling:
-			for player in players:
-				player.pressed_arrow_key = False
+        # User input handling:
+        if not AI_TRAINING_MODE:
+            # Controls handling:
+            for player in players:
+                player.pressed_arrow_key = False
 
-			for event in pg.event.get():
-				if event.type == pg.QUIT:
-					pg.quit()
-					sys.exit()
+            for event in pg.event.get():
+                if event.type == pg.QUIT:
+                    pg.quit()
+                    sys.exit()
 
-				elif event.type == pg.KEYDOWN:
-					if event.key == pg.K_ESCAPE:
-						# Pause menu:
-						request = pause_loop(screen, clock)
-						if request == RQ_RESTART or request == RQ_MAIN_MENU:
-							return request
-					elif event.key == pg.K_BACKSPACE and DEBUG_MODE:
-						return RQ_RESTART
-					elif event.key == pg.K_KP_ENTER and DEBUG_MODE:
-						slow_mo = 5
+                elif event.type == pg.KEYDOWN:
+                    if event.key == pg.K_ESCAPE:
+                        # Pause menu:
+                        request = pause_loop(screen, clock)
+                        if request == RQ_RESTART or request == RQ_MAIN_MENU:
+                            return request
+                    elif event.key == pg.K_BACKSPACE and DEBUG_MODE:
+                        return RQ_RESTART
+                    elif event.key == pg.K_KP_ENTER and DEBUG_MODE:
+                        slow_mo = 5
 
-					if nb_of_players > 0:
-						if event.key == pg.K_LEFT:
-							players[0].new_potential_vel = LEFT
-							players[0].pressed_arrow_key = True
-						elif event.key == pg.K_RIGHT:
-							players[0].new_potential_vel = RIGHT
-							players[0].pressed_arrow_key = True
-						elif event.key == pg.K_UP:
-							players[0].new_potential_vel = UP
-							players[0].pressed_arrow_key = True
-						elif event.key == pg.K_DOWN:
-							players[0].new_potential_vel = DOWN
-							players[0].pressed_arrow_key = True
-						elif event.key == pg.K_KP_PLUS and DEBUG_MODE:
-							players[0].length += 1
-						elif event.key == pg.K_KP_MINUS and DEBUG_MODE:
-							players[0].length -= 1
+                    if nb_of_players > 0:
+                        if event.key == pg.K_LEFT:
+                            players[0].new_potential_vel = LEFT
+                            players[0].pressed_arrow_key = True
+                        elif event.key == pg.K_RIGHT:
+                            players[0].new_potential_vel = RIGHT
+                            players[0].pressed_arrow_key = True
+                        elif event.key == pg.K_UP:
+                            players[0].new_potential_vel = UP
+                            players[0].pressed_arrow_key = True
+                        elif event.key == pg.K_DOWN:
+                            players[0].new_potential_vel = DOWN
+                            players[0].pressed_arrow_key = True
+                        elif event.key == pg.K_KP_PLUS and DEBUG_MODE:
+                            players[0].length += 1
+                        elif event.key == pg.K_KP_MINUS and DEBUG_MODE:
+                            players[0].length -= 1
 
-					if nb_of_players > 1:
-						if event.key == pg.K_a:
-							players[1].new_potential_vel = LEFT
-							players[1].pressed_arrow_key = True
-						elif event.key == pg.K_d:
-							players[1].new_potential_vel = RIGHT
-							players[1].pressed_arrow_key = True
-						elif event.key == pg.K_w:
-							players[1].new_potential_vel = UP
-							players[1].pressed_arrow_key = True
-						elif event.key == pg.K_s:
-							players[1].new_potential_vel = DOWN
-							players[1].pressed_arrow_key = True
+                    if nb_of_players > 1:
+                        if event.key == pg.K_a:
+                            players[1].new_potential_vel = LEFT
+                            players[1].pressed_arrow_key = True
+                        elif event.key == pg.K_d:
+                            players[1].new_potential_vel = RIGHT
+                            players[1].pressed_arrow_key = True
+                        elif event.key == pg.K_w:
+                            players[1].new_potential_vel = UP
+                            players[1].pressed_arrow_key = True
+                        elif event.key == pg.K_s:
+                            players[1].new_potential_vel = DOWN
+                            players[1].pressed_arrow_key = True
 
-				elif event.type == pg.KEYUP:
-					if event.key == pg.K_KP_ENTER:
-						slow_mo = 1
+                elif event.type == pg.KEYUP:
+                    if event.key == pg.K_KP_ENTER:
+                        slow_mo = 1
 
-			# Applying and logging controls:
-			for i in range(len(players)):
-				if players[i].pressed_arrow_key \
-						and players[i].not_going_into_wall(players[i].new_potential_vel) \
-						and players[i].not_going_into_snake_head(snakes) \
-						and not np.array_equal(players[i].vel, players[i].new_potential_vel):
-					if not np.array_equal(- players[i].vel, players[i].new_potential_vel):
-						if players[i].vel.tolist() == LEFT.tolist():
-							if players[i].new_potential_vel.tolist() == UP.tolist():
-								players[i].actions.append(TURN_RIGHT)
-							else:
-								players[i].actions.append(TURN_LEFT)
-						elif players[i].vel.tolist() == UP.tolist():
-							if players[i].new_potential_vel.tolist() == RIGHT.tolist():
-								players[i].actions.append(TURN_RIGHT)
-							else:
-								players[i].actions.append(TURN_LEFT)
-						elif players[i].vel.tolist() == RIGHT.tolist():
-							if players[i].new_potential_vel.tolist() == DOWN.tolist():
-								players[i].actions.append(TURN_RIGHT)
-							else:
-								players[i].actions.append(TURN_LEFT)
-						else:
-							if players[i].new_potential_vel.tolist() == LEFT.tolist():
-								players[i].actions.append(TURN_RIGHT)
-							else:
-								players[i].actions.append(TURN_LEFT)
+            # Applying and logging controls:
+            for i in range(len(players)):
+                if players[i].pressed_arrow_key \
+                        and players[i].not_going_into_wall(players[i].new_potential_vel) \
+                        and players[i].not_going_into_snake_head(snakes) \
+                        and not np.array_equal(players[i].vel, players[i].new_potential_vel):
+                    if not np.array_equal(- players[i].vel, players[i].new_potential_vel):
+                        if players[i].vel.tolist() == LEFT.tolist():
+                            if players[i].new_potential_vel.tolist() == UP.tolist():
+                                players[i].actions.append(TURN_RIGHT)
+                            else:
+                                players[i].actions.append(TURN_LEFT)
+                        elif players[i].vel.tolist() == UP.tolist():
+                            if players[i].new_potential_vel.tolist() == RIGHT.tolist():
+                                players[i].actions.append(TURN_RIGHT)
+                            else:
+                                players[i].actions.append(TURN_LEFT)
+                        elif players[i].vel.tolist() == RIGHT.tolist():
+                            if players[i].new_potential_vel.tolist() == DOWN.tolist():
+                                players[i].actions.append(TURN_RIGHT)
+                            else:
+                                players[i].actions.append(TURN_LEFT)
+                        else:
+                            if players[i].new_potential_vel.tolist() == LEFT.tolist():
+                                players[i].actions.append(TURN_RIGHT)
+                            else:
+                                players[i].actions.append(TURN_LEFT)
 
-						players[i].vel = players[i].new_potential_vel
-					else:
-						players[i].actions.append(REVERSE)
+                        players[i].vel = players[i].new_potential_vel
+                    else:
+                        players[i].actions.append(REVERSE)
 
-						players[i].vel = players[i].get_tail_direction()
-						players[i].positions.reverse()
-				else:
-					players[i].actions.append(DO_NOTHING)
+                        players[i].vel = players[i].get_tail_direction()
+                        players[i].positions.reverse()
+                else:
+                    players[i].actions.append(DO_NOTHING)
 
-		else:  # if AI_TRAINING_MODE:
-			for event in pg.event.get():
-				if event.type == pg.QUIT:
-					pg.quit()
-					sys.exit()
-				elif event.type == pg.KEYDOWN:
-					if event.key == pg.K_ESCAPE:
-						# Save the model
-						pg.quit()
-						sys.exit()
+        else:  # if AI_TRAINING_MODE:
+            for event in pg.event.get():
+                if event.type == pg.QUIT:
+                    pg.quit()
+                    sys.exit()
+                elif event.type == pg.KEYDOWN:
+                    if event.key == pg.K_ESCAPE:
+                        # Save the model
+                        pg.quit()
+                        sys.exit()
 
-		# AI input handling:
-		for snake in snakes:
-			if snake not in players:
-				# Ask model for prediction...
-				snake.pseudo_prediction = DO_NOTHING
-				if random.random() < 2 / TARGET_FPS:
-					snake.pseudo_prediction = pseudo_predict()
-				snake.actions.append(snake.pseudo_prediction)
+        # AI input handling:
+        for snake in snakes:
+            if snake not in players:
+                # Ask model for prediction...
+                snake.pseudo_prediction = DO_NOTHING
+                if random.random() < 2 / TARGET_FPS:
+                    snake.pseudo_prediction = pseudo_predict()
+                snake.actions.append(snake.pseudo_prediction)
 
-				if snake.vel.tolist() == LEFT.tolist():
-					if snake.pseudo_prediction.tolist() == TURN_RIGHT.tolist():
-						snake.new_potential_vel = UP
-					elif snake.pseudo_prediction.tolist() == TURN_LEFT.tolist():
-						snake.new_potential_vel = DOWN
-					elif snake.pseudo_prediction.tolist() == REVERSE.tolist():
-						snake.new_potential_vel = RIGHT
-				elif snake.vel.tolist() == RIGHT.tolist():
-					if snake.pseudo_prediction.tolist() == TURN_RIGHT.tolist():
-						snake.new_potential_vel = DOWN
-					elif snake.pseudo_prediction.tolist() == TURN_LEFT.tolist():
-						snake.new_potential_vel = UP
-					elif snake.pseudo_prediction.tolist() == REVERSE.tolist():
-						snake.new_potential_vel = LEFT
-				elif snake.vel.tolist() == UP.tolist():
-					if snake.pseudo_prediction.tolist() == TURN_RIGHT.tolist():
-						snake.new_potential_vel = RIGHT
-					elif snake.pseudo_prediction.tolist() == TURN_LEFT.tolist():
-						snake.new_potential_vel = LEFT
-					elif snake.pseudo_prediction.tolist() == REVERSE.tolist():
-						snake.new_potential_vel = DOWN
-				else:
-					if snake.pseudo_prediction.tolist() == TURN_RIGHT.tolist():
-						snake.new_potential_vel = LEFT
-					elif snake.pseudo_prediction.tolist() == TURN_LEFT.tolist():
-						snake.new_potential_vel = RIGHT
-					elif snake.pseudo_prediction.tolist() == REVERSE.tolist():
-						snake.new_potential_vel = UP
+                if snake.vel.tolist() == LEFT.tolist():
+                    if snake.pseudo_prediction.tolist() == TURN_RIGHT.tolist():
+                        snake.new_potential_vel = UP
+                    elif snake.pseudo_prediction.tolist() == TURN_LEFT.tolist():
+                        snake.new_potential_vel = DOWN
+                    elif snake.pseudo_prediction.tolist() == REVERSE.tolist():
+                        snake.new_potential_vel = RIGHT
+                elif snake.vel.tolist() == RIGHT.tolist():
+                    if snake.pseudo_prediction.tolist() == TURN_RIGHT.tolist():
+                        snake.new_potential_vel = DOWN
+                    elif snake.pseudo_prediction.tolist() == TURN_LEFT.tolist():
+                        snake.new_potential_vel = UP
+                    elif snake.pseudo_prediction.tolist() == REVERSE.tolist():
+                        snake.new_potential_vel = LEFT
+                elif snake.vel.tolist() == UP.tolist():
+                    if snake.pseudo_prediction.tolist() == TURN_RIGHT.tolist():
+                        snake.new_potential_vel = RIGHT
+                    elif snake.pseudo_prediction.tolist() == TURN_LEFT.tolist():
+                        snake.new_potential_vel = LEFT
+                    elif snake.pseudo_prediction.tolist() == REVERSE.tolist():
+                        snake.new_potential_vel = DOWN
+                else:
+                    if snake.pseudo_prediction.tolist() == TURN_RIGHT.tolist():
+                        snake.new_potential_vel = LEFT
+                    elif snake.pseudo_prediction.tolist() == TURN_LEFT.tolist():
+                        snake.new_potential_vel = RIGHT
+                    elif snake.pseudo_prediction.tolist() == REVERSE.tolist():
+                        snake.new_potential_vel = UP
 
-				if snake.not_going_into_wall(snake.new_potential_vel) and snake.not_going_into_snake_head(snakes):
-					if snake.pseudo_prediction.tolist() == REVERSE.tolist():
-						snake.vel = snake.get_tail_direction()
-						snake.positions.reverse()
-					elif not snake.pseudo_prediction.tolist() == DO_NOTHING.tolist():
-						snake.vel = snake.new_potential_vel
+                if snake.not_going_into_wall(snake.new_potential_vel) and snake.not_going_into_snake_head(snakes):
+                    if snake.pseudo_prediction.tolist() == REVERSE.tolist():
+                        snake.vel = snake.get_tail_direction()
+                        snake.positions.reverse()
+                    elif not snake.pseudo_prediction.tolist() == DO_NOTHING.tolist():
+                        snake.vel = snake.new_potential_vel
 
-		# Making snakes birth and die in AI training mode:
-		if AI_TRAINING_MODE:
-			while len(snakes) < MIN_NB_SNAKES:
-				snakes.append(Snake(RANDOM_POSITION, RANDOM_VEL))
-			while len(snakes) > MAX_NB_SNAKES:
-				random.choice(snakes).is_dead = True
+        # Making snakes birth and die in AI training mode:
+        if AI_TRAINING_MODE:
+            while len(snakes) < MIN_NB_SNAKES:
+                snakes.append(Snake(RANDOM_POSITION, RANDOM_VEL))
+            while len(snakes) > MAX_NB_SNAKES:
+                random.choice(snakes).is_dead = True
 
-		# Snakes logic:
-		for snake in snakes:
-			snake.rewards.append(RW_TIME_PASSED)
-			snake.move(snakes)
+        # Snakes logic:
+        for snake in snakes:
+            snake.rewards.append(RW_TIME_PASSED)
+            snake.move(snakes)
 
-		for snake in snakes:
-			snake.check_got_bitten(snakes)
-			snake.check_has_eaten(food)
+        for snake in snakes:
+            snake.check_got_bitten(snakes)
+            snake.check_has_eaten(food)
 
-		# Dealing with dead snakes:
-		for snake in snakes:
-			if snake.is_dead:
-				if not AI_TRAINING_MODE:
-					if snake in players:
-						living_players[players.index(snake)] = False
-				else:
-					dead_snakes.append(snake)
-				snakes.remove(snake)
+        # Dealing with dead snakes:
+        for snake in snakes:
+            if snake.is_dead:
+                if not AI_TRAINING_MODE:
+                    if snake in players:
+                        living_players[players.index(snake)] = False
+                else:
+                    dead_snakes.append(snake)
+                snakes.remove(snake)
 
-		# Screen reset:
-		screen.fill(LIGHT_GREY)
+        # Screen reset:
+        screen.fill(LIGHT_GREY)
 
-		# Snakes display and state processing:
-		heads_surface.fill(BLACK)
-		for snake in snakes:
-			snake.body_surface.fill(BLACK)
-			snake.draw(screen, heads_surface)
+        # Snakes display and state processing:
+        heads_surface.fill(BLACK)
+        for snake in snakes:
+            snake.body_surface.fill(BLACK)
+            snake.draw(screen, heads_surface)
 
-		# Food logic:
-		if random.random() < FOOD_CHANCE_PER_TICK * math.pow((MAX_FOOD - len(food)) / MAX_FOOD, 4):
-			food.append(Food(snakes, food, CYAN))
+        # Food logic:
+        if random.random() < FOOD_CHANCE_PER_TICK * math.pow((MAX_FOOD - len(food)) / MAX_FOOD, 4):
+            food.append(Food(snakes, food, CYAN))
 
-		# Food display:
-		food_surface.fill(BLACK)
-		for item in food:
-			item.draw(screen, food_surface)
+        # Food display:
+        food_surface.fill(BLACK)
+        for item in food:
+            item.draw(screen, food_surface)
 
-		# Perspective transformations per snake
-		if len(snakes) > 0:
-			bodies_surface = snakes[0].body_surface.copy()
-		for snake in snakes[1:]:
-			bodies_surface.blit(snake.body_surface, (0, 0), special_flags=pg.BLEND_ADD)
-		for snake in snakes:
-			for i in range(LAYERS_PER_STATE):
-				snake.pers_surfaces[i].fill(BLACK)
-			snake.pers_surfaces[0] = screen_to_pers(snake.body_surface, snake.positions[-1], snake.vel)
-			snake.pers_surfaces[1] = screen_to_pers(bodies_surface, snake.positions[-1], snake.vel)
-			snake.pers_surfaces[2] = screen_to_pers(heads_surface, snake.positions[-1], snake.vel)
-			snake.pers_surfaces[3] = screen_to_pers(food_surface, snake.positions[-1], snake.vel)
-			snake.pers_surfaces[4] = screen_to_pers(borders_surface, snake.positions[-1], snake.vel)
-			snake.pers_surfaces[1].blit(snake.pers_surfaces[0], (0, 0), special_flags=pg.BLEND_SUB)
+        # Perspective transformations per snake
+        if len(snakes) > 0:
+            bodies_surface = snakes[0].body_surface.copy()
+        for snake in snakes[1:]:
+            bodies_surface.blit(snake.body_surface, (0, 0), special_flags=pg.BLEND_ADD)
+        for snake in snakes:
+            for i in range(LAYERS_PER_STATE):
+                snake.pers_surfaces[i].fill(BLACK)
+            snake.pers_surfaces[0] = screen_to_pers(snake.body_surface, snake.positions[-1], snake.vel)
+            snake.pers_surfaces[1] = screen_to_pers(bodies_surface, snake.positions[-1], snake.vel)
+            snake.pers_surfaces[2] = screen_to_pers(heads_surface, snake.positions[-1], snake.vel)
+            snake.pers_surfaces[3] = screen_to_pers(food_surface, snake.positions[-1], snake.vel)
+            snake.pers_surfaces[4] = screen_to_pers(borders_surface, snake.positions[-1], snake.vel)
+            snake.pers_surfaces[1].blit(snake.pers_surfaces[0], (0, 0), special_flags=pg.BLEND_SUB)
 
-			# Logging state:
-			for i in range(LAYERS_PER_STATE):
-				snake.states[i].append((pg.surfarray.array2d(snake.pers_surfaces[i]) / 127).astype(bool))
+            # Logging state:
+            for i in range(LAYERS_PER_STATE):
+                snake.states[i].append((pg.surfarray.array2d(snake.pers_surfaces[i]) / 127).astype(bool))
 
-		if DEBUG_MODE:
-			stand_offset = 40
-			pers_offset = 140
-			top = 5
-			left = 5
-			right = 1145
+        if DEBUG_MODE:
+            stand_offset = 40
+            pers_offset = 140
+            top = 5
+            left = 5
+            right = 1145
 
-			# FPS display:
-			current_fps = round(clock.get_fps(), 1)
-			screen.blit(FPS_FONT.render(str(current_fps) + " / " + str(TARGET_FPS), True, BLACK), (left, top))
+            # FPS display:
+            current_fps = round(clock.get_fps(), 1)
+            screen.blit(FPS_FONT.render(str(current_fps) + " / " + str(TARGET_FPS), True, BLACK), (left, top))
 
-			# Display neural net data:
-			i = 0.4
-			if DISPLAY_NN_DATA and nb_of_players > 0:
-				for snake in snakes:
-					screen.blit(snake.body_surface, (left, top + stand_offset * i))
-					i += 1
-				screen.blit(heads_surface, (left, top + stand_offset * i))
-				i += 1
-				screen.blit(food_surface, (left, top + stand_offset * i))
-				i += 1
-				screen.blit(bodies_surface, (left, top + stand_offset * i))
-				i += 1
+            # Display neural net data:
+            i = 0.4
+            if DISPLAY_NN_DATA and nb_of_players > 0:
+                for snake in snakes:
+                    screen.blit(snake.body_surface, (left, top + stand_offset * i))
+                    i += 1
+                screen.blit(heads_surface, (left, top + stand_offset * i))
+                i += 1
+                screen.blit(food_surface, (left, top + stand_offset * i))
+                i += 1
+                screen.blit(bodies_surface, (left, top + stand_offset * i))
+                i += 1
 
-				if living_players[0]:
-					rw_min = -300
-					rw_max = 300
-					if game_loop_cycles == 0:
-						rw = 0
-					else:
-						rw = players[0].rewards[game_loop_cycles] + rw * DISCOUNT_FACTOR
-					rw_color = max(min(math.floor((rw - rw_min) / (rw_max - rw_min) * 256), 255), 0)
-					screen.fill((rw_color, rw_color, rw_color), pg.Rect((left, top + stand_offset * i), GRID_SIZE))
+                if living_players[0]:
+                    rw_min = -300
+                    rw_max = 300
+                    if game_loop_cycles == 0:
+                        rw = 0
+                    else:
+                        rw = players[0].rewards[game_loop_cycles] + rw * DISCOUNT_FACTOR
+                    rw_color = max(min(math.floor((rw - rw_min) / (rw_max - rw_min) * 256), 255), 0)
+                    screen.fill((rw_color, rw_color, rw_color), pg.Rect((left, top + stand_offset * i), GRID_SIZE))
 
-					i = 0
-					for pers_surface in players[0].pers_surfaces:
-						screen.blit(pers_surface, (right, top + pers_offset * i))
-						i += 1
+                    i = 0
+                    for pers_surface in players[0].pers_surfaces:
+                        screen.blit(pers_surface, (right, top + pers_offset * i))
+                        i += 1
 
-		# Display update
-		if not AI_TRAINING_MODE:
-			pg.display.update()
+        # Display update
+        if not AI_TRAINING_MODE:
+            pg.display.update()
 
-		# Concatenating dead snakes data and training the AI model:
-		if AI_TRAINING_MODE and len(dead_snakes) >= TRAIN_EVERY_NB_DEAD_SNAKES:
-			ai_data_created = False
-			for dead_snake in dead_snakes:
-				ai_bp_rewards = back_propagate_rewards(dead_snake.rewards)
-				if ai_data_created:
-					ai_states = np.concatenate((ai_states, np.array(dead_snake.states, dtype=bool)[:, :-1]), 1)
-					ai_actions = np.concatenate((ai_actions, np.array(dead_snake.actions, dtype=bool)[1:]), 0)
-					ai_rewards = np.concatenate((ai_rewards, np.array(ai_bp_rewards, dtype=float)[1:]), 0)
-				else:
-					ai_states = np.array(dead_snake.states, dtype=bool)[:, 1:]
-					ai_actions = np.array(dead_snake.actions, dtype=bool)[1:]
-					ai_rewards = np.array(ai_bp_rewards, dtype=float)[1:]
-					ai_data_created = True
+        # Concatenating dead snakes data and training the AI model:
+        if AI_TRAINING_MODE and len(dead_snakes) >= TRAIN_EVERY_NB_DEAD_SNAKES:
+            ai_data_created = False
+            for dead_snake in dead_snakes:
+                ai_bp_rewards = back_propagate_rewards(dead_snake.rewards)
+                if ai_data_created:
+                    ai_states = np.concatenate((ai_states, np.array(dead_snake.states, dtype=bool)[:, :-1]), 1)
+                    ai_actions = np.concatenate((ai_actions, np.array(dead_snake.actions, dtype=bool)[1:]), 0)
+                    ai_rewards = np.concatenate((ai_rewards, np.array(ai_bp_rewards, dtype=float)[1:]), 0)
+                else:
+                    ai_states = np.array(dead_snake.states, dtype=bool)[:, 1:]
+                    ai_actions = np.array(dead_snake.actions, dtype=bool)[1:]
+                    ai_rewards = np.array(ai_bp_rewards, dtype=float)[1:]
+                    ai_data_created = True
 
-			# Train AI model
-			print("AI model trained.")
+            # Train AI model
+            print("AI model trained.")
 
-		# Saving human data and training the human model:
-		if nb_of_players > 0:
-			if sum(living_players) < nb_of_players or len(snakes) == 1:
-				# Last frames timer:
-				last_frames -= 1
+        # Saving human data and training the human model:
+        if nb_of_players > 0:
+            if sum(living_players) < nb_of_players or len(snakes) == 1:
+                # Last frames timer:
+                last_frames -= 1
 
-				if not human_data_processed:
-					for player in players:
-						human_bp_rewards = back_propagate_rewards(player.rewards)
-						if human_data_exists:
-							human_states = np.concatenate((human_states, np.array(player.states, dtype=bool)[:, :-1]), 1)
-							human_actions = np.concatenate((human_actions, np.array(player.actions, dtype=bool)[1:]), 0)
-							human_rewards = np.concatenate((human_rewards, np.array(human_bp_rewards, dtype=float)[1:]), 0)
-						else:
-							human_states = np.array(player.states, dtype=bool)[:, 1:]
-							human_actions = np.array(player.actions, dtype=bool)[1:]
-							human_rewards = np.array(human_bp_rewards, dtype=float)[1:]
-							human_data_exists = True
-					print("Human data saved.")
-					np.save(TRAINING_DATA_PATH + "human_states.npy", human_states)
-					np.save(TRAINING_DATA_PATH + "human_actions.npy", human_actions)
-					np.save(TRAINING_DATA_PATH + "human_rewards.npy", human_rewards)
+                if not human_data_processed:
+                    for player in players:
+                        human_bp_rewards = back_propagate_rewards(player.rewards)
+                        if human_data_exists:
+                            human_states = np.concatenate((human_states, np.array(player.states, dtype=bool)[:, :-1]),
+                                1)
+                            human_actions = np.concatenate((human_actions, np.array(player.actions, dtype=bool)[1:]), 0)
+                            human_rewards = np.concatenate((human_rewards, np.array(human_bp_rewards, dtype=float)[1:]),
+                                0)
+                        else:
+                            human_states = np.array(player.states, dtype=bool)[:, 1:]
+                            human_actions = np.array(player.actions, dtype=bool)[1:]
+                            human_rewards = np.array(human_bp_rewards, dtype=float)[1:]
+                            human_data_exists = True
+                    print("Human data saved.")
+                    np.save(TRAINING_DATA_PATH + "human_states.npy", human_states)
+                    np.save(TRAINING_DATA_PATH + "human_actions.npy", human_actions)
+                    np.save(TRAINING_DATA_PATH + "human_rewards.npy", human_rewards)
 
-					# Train human model
-					print("Human model trained."+".. I wish...")
+                    # Train human model
+                    print("Human model trained." + ".. I wish...")
 
-					human_data_processed = True
+                    human_data_processed = True
+
+        # End of game:
+        if (nb_of_players > 0 and not DEBUG_MODE) or len(snakes) == 0:
+            if sum(living_players) == 0:
+                if last_frames == 0:
+                    winner = "AI"
+                    request = end_loop(screen, clock, winner)
+                    return request
+            elif sum(living_players) == 1 and (nb_of_players > 1 or len(snakes) == 1):
+                if last_frames == 0:
+                    winner = "PLAYER " + str(living_players.index(True) + 1)
+                    request = end_loop(screen, clock, winner)
+                    return request
+
+        # Time flow:
+        if not AI_TRAINING_MODE:
+            clock.tick(TARGET_FPS / slow_mo)
+        for snake in snakes:
+            snake.time += 1
+        game_loop_cycles += 1
 
 
-		# End of game:
-		if (nb_of_players > 0 and not DEBUG_MODE) or len(snakes) == 0:
-			if sum(living_players) == 0:
-				if last_frames == 0:
-					winner = "AI"
-					request = end_loop(screen, clock, winner)
-					return request
-			elif sum(living_players) == 1 and (nb_of_players > 1 or len(snakes) == 1):
-				if last_frames == 0:
-					winner = "PLAYER " + str(living_players.index(True) + 1)
-					request = end_loop(screen, clock, winner)
-					return request
-
-		# Time flow:
-		if not AI_TRAINING_MODE:
-			clock.tick(TARGET_FPS / slow_mo)
-		for snake in snakes:
-			snake.time += 1
-		game_loop_cycles += 1
-
-	# ---------------------------------- GAME LOOP END ----------------------------------
+# ---------------------------------- GAME LOOP END ----------------------------------
 
 
 def main():
-	pg.display.set_caption("Snaskape")
-	screen = pg.display.set_mode(RESOLUTION)
-	clock = pg.time.Clock()
+    pg.display.set_caption("Snaskape")
+    screen = pg.display.set_mode(RESOLUTION)
+    clock = pg.time.Clock()
 
-	while True:
-		nb_of_players = start_loop(screen, clock)
-		if nb_of_players == -1:
-			global AI_TRAINING_MODE
-			AI_TRAINING_MODE = True
-			global HUMAN_MODEL_MODE
-			HUMAN_MODEL_MODE = False
-			global DEBUG_MODE
-			DEBUG_MODE = False
-			nb_of_players = 0
+    while True:
+        nb_of_players = start_loop(screen, clock)
+        if nb_of_players == -1:
+            global AI_TRAINING_MODE
+            AI_TRAINING_MODE = True
+            global HUMAN_MODEL_MODE
+            HUMAN_MODEL_MODE = False
+            global DEBUG_MODE
+            DEBUG_MODE = False
+            nb_of_players = 0
 
-		# Loop for restarting the game:
-		while True:
-			living_players = []
-			for i in range(nb_of_players):
-				living_players.append(True)
-			request = game_loop(screen, clock, nb_of_players, living_players)
-			if request == RQ_MAIN_MENU:
-				break
+        # Loop for restarting the game:
+        while True:
+            living_players = []
+            for i in range(nb_of_players):
+                living_players.append(True)
+            request = game_loop(screen, clock, nb_of_players, living_players)
+            if request == RQ_MAIN_MENU:
+                break
 
 
 # Program start:
 if __name__ == '__main__':
-	main()
+    main()
