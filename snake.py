@@ -1,3 +1,14 @@
+import random
+
+import numpy as np
+import pygame as pg
+
+from snaskape import RED, DARK_GREY, INITIAL_SNAKE_LENGTH, DO_NOTHING, RANDOM_VEL, LEFT, RIGHT, UP, DOWN, \
+	RANDOM_POSITION, pick_random_position, VECTOR_SIZE, GRID_SIZE, LAYERS_PER_STATE, RW_DID_NOT_MOVE, DEAD_AT_LENGTH, \
+	RW_HAS_EATEN, RW_GOT_BITTEN, RW_HAS_BITTEN, RW_HAS_BITTEN_HIMSELF, RW_HAS_KILLED, RW_GOT_KILLED, BIRTH_FROM_LENGTH, \
+	RW_TIME_PASSED, AI_TRAINING_MODE, fill_cell, WHITE
+
+
 class Snake:
 	def __init__(self, positions, vel, head_color=RED, body_color=DARK_GREY, length=INITIAL_SNAKE_LENGTH):
 		self.is_dead = False
