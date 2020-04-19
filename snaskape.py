@@ -24,7 +24,7 @@ VECTOR_SIZE = (1, 2)
 RANDOM_POSITION = np.array([-1, -1])
 RANDOM_VEL = np.array([0, 0])
 
-FONT = "res/courier_new.ttf"
+FONT = "res/SourceCodePro-Regular.ttf"
 MAIN_FONT_SIZE = 20
 FPS_FONT_SIZE = 12
 MAIN_FONT = pg.font.Font(FONT, MAIN_FONT_SIZE)
