@@ -1,110 +1,39 @@
-import numpy as np
-import pygame as pg
+import math
+import os
 import random
 import sys
-import os
-import math
 
+import numpy as np
+import pygame as pg
+
+import core
+from core import GRID_SIZE, RESOLUTION, PERSPECTIVE_GRID_SIZE, PERSPECTIVE_GRID_MIDDLE, H_SCREEN_CENTER, \
+    V_SCREEN_CENTER, MIDDLE_OF_THE_GRID, LEFT_QUARTER_OF_THE_GRID, RIGHT_QUARTER_OF_THE_GRID, RANDOM_POSITION, \
+    RANDOM_VEL, V_LINE_PADDING, V_LINE_OFFSET, V_MENU_OFFSET, V_MENU_PADDING, H_MENU_PADDING, \
+    DEBUG_MODE, DISPLAY_NN_DATA, LAYERS_PER_STATE, AI_TRAINING_MODE, TRAINING_DATA_PATH, RW_TIME_PASSED, \
+    DISCOUNT_FACTOR, TOO_LATE_REWARD, TRAIN_EVERY_NB_DEAD_SNAKES, MIN_NB_SNAKES, MAX_NB_SNAKES, WHITE, BLACK, DARK_BLUE, \
+    LIGHT_GREY, CYAN, LEFT, RIGHT, UP, DOWN, DO_NOTHING, REVERSE, TURN_LEFT, TURN_RIGHT, RQ_MAIN_MENU, RQ_RESTART, \
+    RQ_CONTINUE, INITIAL_NB_SNAKES, FOOD_CHANCE_PER_TICK, MAX_FOOD, TARGET_FPS, NB_LAST_FRAMES, FONT, MAIN_FONT_SIZE, \
+    FPS_FONT_SIZE
 from food import Food
 from snake import Snake
 
 pg.init()
 
-TARGET_RESOLUTION = np.array([1280, 720])
-UNIT_SIZE = 20
-GRID_SIZE = (TARGET_RESOLUTION / UNIT_SIZE).astype(int)
-RESOLUTION = UNIT_SIZE * GRID_SIZE
-PERSPECTIVE_GRID_SIZE = np.array([np.max(GRID_SIZE) * 2 - 1, np.max(GRID_SIZE) * 2 - 1])
-PERSPECTIVE_GRID_MIDDLE = (PERSPECTIVE_GRID_SIZE / 2).astype(int)
-
-H_SCREEN_CENTER = int(RESOLUTION[0] / 2)
-V_SCREEN_CENTER = int(RESOLUTION[1] / 2)
-
-MIDDLE_OF_THE_GRID = [(GRID_SIZE / 2).astype(int)]
-LEFT_QUARTER_OF_THE_GRID = [(GRID_SIZE * np.array([0.25, 0.5])).astype(int)]
-RIGHT_QUARTER_OF_THE_GRID = [(GRID_SIZE * np.array([0.75, 0.5])).astype(int) + [1, 0]]
-VECTOR_SIZE = (1, 2)
-RANDOM_POSITION = np.array([-1, -1])
-RANDOM_VEL = np.array([0, 0])
-
-FONT = "res/SourceCodePro-Regular.ttf"
-MAIN_FONT_SIZE = 20
-FPS_FONT_SIZE = 12
-MAIN_FONT = pg.font.Font(FONT, MAIN_FONT_SIZE)
-FPS_FONT = pg.font.Font(FONT, FPS_FONT_SIZE)
-V_LINE_PADDING = 4
-V_LINE_OFFSET = MAIN_FONT_SIZE + V_LINE_PADDING
-V_MENU_OFFSET = 15
-V_MENU_PADDING = 15
-H_MENU_PADDING = 20
-
-DEBUG_MODE = True
-DISPLAY_NN_DATA = False
-
-LAYERS_PER_STATE = 5
-AI_TRAINING_MODE = False
-TRAINING_DATA_PATH = os.path.dirname(__file__) + "/training_data/" \
-                     + str(GRID_SIZE[0]) + "_" + str(GRID_SIZE[1]) + "/"
 if not os.path.exists(TRAINING_DATA_PATH):
     os.makedirs(TRAINING_DATA_PATH)
-HUMAN_MODEL_MODE = False
+
+MAIN_FONT = pg.font.Font(FONT, MAIN_FONT_SIZE)
+FPS_FONT = pg.font.Font(FONT, FPS_FONT_SIZE)
+
 
 # Rewards:
-RW_HAS_KILLED = 100
-RW_HAS_BITTEN = 65
-RW_HAS_EATEN = 10
-RW_TIME_PASSED = -1
-RW_DID_NOT_MOVE = -10
-RW_GOT_BITTEN = -50
-RW_HAS_BITTEN_HIMSELF = -65
-RW_GOT_KILLED = -200
 
 # Model parameters:
-DISCOUNT_FACTOR = 0.9
-IGNORE_REWARD_DISCOUNTED_BY = 0.01
-TOO_LATE_REWARD = math.ceil(math.log(IGNORE_REWARD_DISCOUNTED_BY, DISCOUNT_FACTOR))
-TRAIN_EVERY_NB_DEAD_SNAKES = 10
 
 # AI TRAINING MODE PARAMETERS:
-MIN_NB_SNAKES = 2
-MAX_NB_SNAKES = 15
-
-WHITE = (255, 255, 255)
-BLACK = (0, 0, 0)
-DARK_BLUE = (0, 0, 100)
-LIGHT_GREY = (150, 150, 150)
-DARK_GREY = (100, 100, 100)
-RED = (255, 0, 0)
-CYAN = (85, 232, 217)
-
-LEFT = np.array([-1, 0])
-RIGHT = np.array([1, 0])
-UP = np.array([0, -1])
-DOWN = np.array([0, 1])
-
-DO_NOTHING = np.array([True, False, False, False], dtype=bool)
-REVERSE = np.array([False, True, False, False], dtype=bool)
-TURN_LEFT = np.array([False, False, True, False], dtype=bool)
-TURN_RIGHT = np.array([False, False, False, True], dtype=bool)
 
 # Menu requests:
-RQ_MAIN_MENU = 0
-RQ_RESTART = 1
-RQ_CONTINUE = 2
-
-INITIAL_NB_SNAKES = 2
-INITIAL_SNAKE_LENGTH = 10
-DEAD_AT_LENGTH = 2
-BIRTH_FROM_LENGTH = 3
-FOOD_CHANCE_PER_TICK = 0.05
-MAX_FOOD = 12
-
-TARGET_FPS = 15
-NB_LAST_FRAMES = 2
-
-
-def fill_cell(screen, cell_position, color):
-    screen.fill(color, pg.Rect(*((cell_position * UNIT_SIZE).tolist()), UNIT_SIZE, UNIT_SIZE))
 
 
 def get_char_width(font):
@@ -127,7 +56,7 @@ def display_message(screen, message, popup_top):
     for line in message:
         text = MAIN_FONT.render(line, True, BLACK)
         screen.blit(text, (
-            H_SCREEN_CENTER - text.get_rect().width / 2,
+            int(H_SCREEN_CENTER - text.get_rect().width / 2),
             popup_top + V_MENU_PADDING + i * V_LINE_OFFSET - V_MENU_OFFSET
             ))
         i += 1
@@ -137,15 +66,15 @@ def display_popup(screen, message):
     message.insert(1, "-" * len(message[0]))
     char_width = get_char_width(MAIN_FONT)
     popup_size = get_popup_size(message, char_width)
-    popup_top = V_SCREEN_CENTER - popup_size[1] / 2
-    screen.fill(WHITE,
-        pg.Rect(((H_SCREEN_CENTER - popup_size[0] / 2), popup_top - V_MENU_OFFSET),
-            popup_size))
+    popup_top = int(V_SCREEN_CENTER - popup_size[1] / 2)
+    screen.fill(
+        WHITE,
+        pg.Rect(
+            (int(H_SCREEN_CENTER - popup_size[0] / 2), popup_top - V_MENU_OFFSET),
+            popup_size
+            )
+        )
     display_message(screen, message, popup_top)
-
-
-def pick_random_position():
-    return (np.random.rand(*VECTOR_SIZE) * GRID_SIZE).astype(int).flatten()
 
 
 def screen_to_pers(surface, position, direction):
@@ -217,12 +146,14 @@ def start_loop(screen, clock):
 
 
 def pause_loop(screen, clock):
-    message = ["PAUSE MENU",
+    message = [
+        "PAUSE MENU",
         "",
         "Continue: Enter",
         "Restart: Backspace",
         "Main menu: Tab",
-        "Exit: Escape"]
+        "Exit: Escape"
+        ]
     display_popup(screen, message)
 
     pg.display.update()
@@ -690,12 +621,9 @@ def main():
     while True:
         nb_of_players = start_loop(screen, clock)
         if nb_of_players == -1:
-            global AI_TRAINING_MODE
-            AI_TRAINING_MODE = True
-            global HUMAN_MODEL_MODE
-            HUMAN_MODEL_MODE = False
-            global DEBUG_MODE
-            DEBUG_MODE = False
+            core.AI_TRAINING_MODE = True
+            core.HUMAN_MODEL_MODE = False
+            core.DEBUG_MODE = False
             nb_of_players = 0
 
         # Loop for restarting the game:
